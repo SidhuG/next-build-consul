@@ -1,0 +1,83 @@
+# http://www.smartjava.org/content/service-discovery-docker-and-consul-part-1
+
+# Create docker host (virtual box) to run consul docker image
+docker-machine create nb-consul --driver virtualbox
+
+#switch docker environment to nb-consul
+eval $(docker-machine env nb-consul)
+
+# Run consul inside the VM as docker container 
+docker run -d --restart always -p 8300:8300 -p 8301:8301 -p 8301:8301/udp -p 8302:8302/udp -p 8302:8302 -p 8400:8400 -p 8500:8500 -p 53:53/udp -h server1 progrium/consul -server -bootstrap -ui-dir /ui -advertise $(docker-machine ip nb-consul)
+
+
+# Create docker host (virtual box) to run swarm master nb1, a single command creates host and start swarm master
+docker-machine create -d virtualbox --swarm --swarm-master --swarm-discovery="consul://$(docker-machine ip nb-consul):8500" --engine-opt="cluster-store=consul://$(docker-machine ip nb-consul):8500" --engine-opt="cluster-advertise=eth1:2376" nb1
+
+# Create docker host (virtual box) to run swarm agent nb2, a single command creates host and start swarm agent
+docker-machine create -d virtualbox --swarm  \
+            --swarm-discovery="consul://$(docker-machine ip nb-consul):8500" \
+            --engine-opt="cluster-store=consul://$(docker-machine ip nb-consul):8500" \
+           --engine-opt="cluster-advertise=eth1:2376" nb2
+
+# Create docker host (virtual box) to run swarm agent nb3, a single command creates host and start swarm agent nb3
+docker-machine create -d virtualbox --swarm \
+              --swarm-discovery="consul://$(docker-machine ip nb-consul):8500"  \
+              --engine-opt="cluster-store=consul://$(docker-machine ip nb-consul):8500" \
+              --engine-opt="cluster-advertise=eth1:2376" nb3
+
+
+cat /usr/local/bin/addToHost 
+   #!/usr/bin/env bash
+ 
+   # clear existing docker.local entry from /etc/hosts
+   #sudo sed -i "/"${1}"\.local$/d" /etc/hosts
+ 
+   # get ip of running machine
+   export DOCKER_IP="$(docker-machine ip $1)"
+ 
+   # update /etc/hosts with docker machine ip
+   sudo /bin/bash -c "echo \"${DOCKER_IP} $1.local\" >> /etc/hosts"
+
+addToHost nb1
+addToHost nb2
+addToHost nb3
+addToHost nb-consul
+
+
+docker-machine env nb1
+# Switch to swarm master, so that local docker client speaks to docker-engine on host running swarm master host
+eval $(docker-machine env --swarm nb1)
+
+
+# create an overlay network the the name my-net
+$ docker network create --driver overlay --subnet=10.0.9.0/24 my-net
+
+# And since we created this on our swarm master, this network will be available in all the members of our swarm. When we create our services later on, we'll connect those to this network, so that they all share the same subnet.
+
+# TO install envsubst on mac os
+brew install gettext
+brew link --force gettext
+echo 'export PATH="/usr/local/opt/gettext/bin:$PATH"' >> ~/.bash_profile
+
+# To subsitute env variables into compose files.
+# http://stackoverflow.com/questions/29377853/how-to-use-environment-variables-in-docker-compose
+source ./getIPenv.sh; envsubst < "template-docker-compose-agents.yml" > "docker-compose-agents-generated.yml"
+
+#Run docker compose to run consul-agents on nb1 nb2 and nb3 VM
+docker-compose -f docker-compose-agents-generated.yml up -d
+
+# switch to swarm master
+eval $(docker-machine env --swarm nb1)
+
+
+#entrypoint.sh registers service to consul when service (backend/frontend) is started
+# start backend services
+docker-compose -f docker-compose-backend.yml up -d
+
+source ./getIPenv.sh; envsubst < "template-docker-compose-frontend.yaml" > docker-compose-frontend-generated.yml
+
+
+#To use single instance of HA proxy, instead of using DNS queries from
+
+
+
